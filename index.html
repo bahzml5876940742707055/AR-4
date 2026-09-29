@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AR Game: อัลกอริทึมในชีวิตประจำวัน</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- MediaPipe Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;600&display=swap');
+        
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Kanit', sans-serif;
+            background-color: #1a202c; /* Fallback background */
+            touch-action: none; /* Prevent scrolling on mobile */
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+
+        /* Mirror the video so it acts like a mirror */
+        #webcam-video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            z-index: 1;
+            opacity: 0.8; /* Slightly dim the camera for better UI contrast */
+        }
+
+        #game-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10; /* Canvas on top of video */
+        }
+
+        /* Glassmorphism DOM UI for start screen */
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        #dom-ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 20;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            pointer-events: none; /* Let clicks pass through if not on button */
+        }
+
+        .pointer-events-auto {
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <!-- Background Video (Camera Feed) -->
+        <video id="webcam-video" autoplay playsinline></video>
+        
+        <!-- Foreground Game Canvas -->
+        <canvas id="game-canvas"></canvas>
+
+        <!-- DOM UI Layer (Start Screen & Notifications) -->
+        <div id="dom-ui-layer">
+            <!-- Start Menu -->
+            <div id="start-menu" class="glass-panel p-8 rounded-3xl text-center max-w-lg mx-4 pointer-events-auto transition-opacity duration-500">
+                <h1 class="text-4xl md:text-5xl font-bold text-white mb-4 drop-shadow-md">Make a Sentence</h1>
+                <h2 class="text-xl md:text-2xl text-blue-200 mb-6 drop-shadow-md">เรียนรู้อัลกอริทึมในชีวิตประจำวัน (AR)</h2>
+                <p class="text-gray-200 mb-8 text-sm md:text-base">
+                    ใช้มือผ่านกล้อง จีบนิ้วเพื่อหยิบจับ<br>หรือใช้เมาส์/ทัชสกรีน ลากวางคำศัพท์ให้ถูกต้อง
+                </p>
+                <button id="btn-start" class="bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white font-bold py-3 px-10 rounded-full shadow-lg transform transition hover:scale-105 active:scale-95 text-xl">
+                    เข้าสู่เกม (Start)
+                </button>
+            </div>
+            
+            <!-- Loading indicator -->
+            <div id="loading-indicator" class="hidden glass-panel px-6 py-3 rounded-full text-white font-semibold flex items-center space-x-3 pointer-events-auto mt-4">
+                <svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>กำลังเปิดกล้องและ AI...</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. Game Data & Configuration ---
+        const LEVELS = [
+            {
+                title: "การตื่นนอน",
+                steps: [
+                    { id: 1, text: "ลืมตา", en: "Wake up", emoji: "😴" },
+                    { id: 2, text: "ลุกจากเตียง", en: "Get out of bed", emoji: "🛏️" },
+                    { id: 3, text: "เก็บที่นอน", en: "Make the bed", emoji: "🛌" }
+                ]
+            },
+            {
+                title: "แปรงฟัน",
+                steps: [
+                    { id: 1, text: "หยิบแปรง", en: "Toothbrush", emoji: "🪥" },
+                    { id: 2, text: "บีบยาสีฟัน", en: "Toothpaste", emoji: "🧴" },
+                    { id: 3, text: "แปรงฟัน", en: "Brush", emoji: "😬" },
+                    { id: 4, text: "บ้วนปาก", en: "Rinse", emoji: "🚰" }
+                ]
+            },
+            {
+                title: "ทำความสะอาดบ้าน",
+                steps: [
+                    { id: 1, text: "กวาดพื้น", en: "Sweep", emoji: "🧹" },
+                    { id: 2, text: "ถูพื้น", en: "Mop", emoji: "🧽" },
+                    { id: 3, text: "ทิ้งขยะ", en: "Throw trash", emoji: "🗑️" }
+                ]
+            },
+            {
+                title: "อ่านหนังสือ",
+                steps: [
+                    { id: 1, text: "หยิบหนังสือ", en: "Get book", emoji: "📚" },
+                    { id: 2, text: "เปิดหน้า", en: "Open page", emoji: "📖" },
+                    { id: 3, text: "อ่าน", en: "Read", emoji: "🧠" }
+                ]
+            },
+            {
+                title: "ซักผ้า",
+                steps: [
+                    { id: 1, text: "แยกผ้า", en: "Sort clothes", emoji: "🧺" },
+                    { id: 2, text: "ใส่เครื่อง", en: "Put in machine", emoji: "👕" },
+                    { id: 3, text: "ตากผ้า", en: "Hang out", emoji: "☀️" }
+                ]
+            }
+        ];
+
+        // --- 2. State Variables ---
+        const GameState = {
+            MENU: 0,
+            INSTRUCTIONS: 1,
+            PLAYING: 2,
+            LEVEL_COMPLETE: 3,
+            GAME_OVER: 4
+        };
+
+        let currentState = GameState.MENU;
+        let currentLevelIndex = 0;
+        let score = 0;
+        
+        let cards = [];
+        let slots = [];
+        let draggedCard = null;
+        
+        // Canvas Setup
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+        let width, height;
+
+        // --- 3. Unified Input / Cursor System ---
+        const cursor = {
+            x: 0, y: 0,
+            isPinching: false,
+            source: 'mouse', // 'mouse' or 'hand'
+            state: 'normal', // normal, hover, miss, grab
+            lastHandTime: 0,
+            radius: 15
+        };
+
+        let rawMouseX = -100, rawMouseY = -100, isMouseDown = false;
+        let handX = -100, handY = -100, isHandPinching = false, handLandmarks = null;
+        
+        // UI Elements specific to Canvas
+        let startARButton = { x: 0, y: 0, w: 200, h: 60, text: "เริ่มเกม!" };
+
+        // Mouse Listeners
+        window.addEventListener('mousemove', (e) => {
+            rawMouseX = e.clientX;
+            rawMouseY = e.clientY;
+        });
+        window.addEventListener('mousedown', (e) => {
+            isMouseDown = true;
+            rawMouseX = e.clientX;
+            rawMouseY = e.clientY;
+            handleActionStart(rawMouseX, rawMouseY);
+        });
+        window.addEventListener('mouseup', () => {
+            isMouseDown = false;
+            handleActionEnd();
+        });
+
+        // Touch Listeners (Fallback)
+        window.addEventListener('touchstart', (e) => {
+            if(e.touches.length > 0) {
+                isMouseDown = true;
+                rawMouseX = e.touches[0].clientX;
+                rawMouseY = e.touches[0].clientY;
+                handleActionStart(rawMouseX, rawMouseY);
+            }
+        }, {passive: false});
+        window.addEventListener('touchmove', (e) => {
+            if(e.touches.length > 0) {
+                e.preventDefault(); // Prevent scrolling while playing
+                rawMouseX = e.touches[0].clientX;
+                rawMouseY = e.touches[0].clientY;
+            }
+        }, {passive: false});
+        window.addEventListener('touchend', () => {
+            isMouseDown = false;
+            handleActionEnd();
+        });
+
+        // Resize
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+            
+            // Re-center UI elements
+            startARButton.x = width / 2 - startARButton.w / 2;
+            startARButton.y = height / 2 - startARButton.h / 2;
+            
+            if(currentState === GameState.PLAYING) {
+               // Reposition logic could go here if needed, but keeping it simple for now
+            }
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // --- 4. MediaPipe Integration ---
+        const videoElement = document.getElementById('webcam-video');
+        
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                handLandmarks = results.multiHandLandmarks[0]; // Use first detected hand
+                
+                // Index Finger Tip (Landmark 8)
+                const indexTip = handLandmarks[8];
+                // Thumb Tip (Landmark 4)
+                const thumbTip = handLandmarks[4];
+
+                // Map to canvas (Remember video is mirrored via CSS, so we invert X for logic)
+                handX = (1 - indexTip.x) * width;
+                handY = indexTip.y * height;
+
+                // --- CRITICAL: Calculate Pinch using Pythagoras ---
+                // Distance in normalized coordinates (0 to 1)
+                const dx = indexTip.x - thumbTip.x;
+                const dy = indexTip.y - thumbTip.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                // Threshold for pinch (adjust based on testing, ~0.05 to 0.08 is usually good)
+                const PINCH_THRESHOLD = 0.07; 
+                const wasPinching = isHandPinching;
+                isHandPinching = distance < PINCH_THRESHOLD;
+
+                // Trigger action events similar to mouse clicks
+                if (isHandPinching && !wasPinching) {
+                    handleActionStart(handX, handY);
+                } else if (!isHandPinching && wasPinching) {
+                    handleActionEnd();
+                }
+
+                cursor.lastHandTime = performance.now();
+            } else {
+                handLandmarks = null;
+                if(isHandPinching) {
+                    isHandPinching = false;
+                    handleActionEnd();
+                }
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        
+        hands.setOptions({
+            maxNumHands: 1, // Only track one hand for cursor
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        
+        hands.onResults(onResults);
+
+        // --- 5. Game Logic Functions ---
+        
+        // Unify inputs to update the central 'cursor' object
+        function updateCursor() {
+            const now = performance.now();
+            const USING_HAND = (now - cursor.lastHandTime < 500); // Hand active if detected within 0.5s
+
+            if (USING_HAND) {
+                cursor.x += (handX - cursor.x) * 0.5; // Smooth movement
+                cursor.y += (handY - cursor.y) * 0.5;
+                cursor.isPinching = isHandPinching;
+                cursor.source = 'hand';
+            } else {
+                cursor.x = rawMouseX;
+                cursor.y = rawMouseY;
+                cursor.isPinching = isMouseDown;
+                cursor.source = 'mouse';
+            }
+
+            // Determine Cursor State based on logic
+            let hoveringObject = getObjectUnderCursor(cursor.x, cursor.y);
+            
+            if (cursor.isPinching) {
+                if (draggedCard || hoveringObject) {
+                    cursor.state = 'grab'; // Green
+                } else {
+                    cursor.state = 'miss'; // Red
+                }
+            } else {
+                if (hoveringObject) {
+                    cursor.state = 'hover'; // Yellow
+                } else {
+                    cursor.state = 'normal'; // Blue
+                }
+            }
+        }
+
+        function startCamera() {
+            document.getElementById('start-menu').classList.add('opacity-0', 'pointer-events-none');
+            document.getElementById('loading-indicator').classList.remove('hidden');
+            
+            const camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 640,
+                height: 480
+            });
+            
+            camera.start().then(() => {
+                document.getElementById('dom-ui-layer').style.display = 'none';
+                currentState = GameState.INSTRUCTIONS;
+                requestAnimationFrame(drawLoop);
+            }).catch(err => {
+                alert("ไม่สามารถเปิดกล้องได้ กรุณาอนุญาตการใช้งานกล้อง \n(Error: " + err + ")");
+                document.getElementById('loading-indicator').classList.add('hidden');
+                document.getElementById('start-menu').classList.remove('opacity-0', 'pointer-events-none');
+            });
+        }
+
+        document.getElementById('btn-start').addEventListener('click', startCamera);
+
+        // Utility to shuffle array
+        function shuffle(array) {
+            let currentIndex = array.length,  randomIndex;
+            while (currentIndex > 0) {
+                randomIndex = Math.floor(Math.random() * currentIndex);
+                currentIndex--;
+                [array[currentIndex], array[randomIndex]] = [array[randomIndex], array[currentIndex]];
+            }
+            return array;
+        }
+
+        function initLevel(index) {
+            const levelData = LEVELS[index];
+            cards = [];
+            slots = [];
+            draggedCard = null;
+
+            const numSteps = levelData.steps.length;
+            
+            // Calculate layout based on screen width
+            const cardW = Math.min(180, (width * 0.9) / numSteps);
+            const cardH = cardW * 1.2;
+            const gap = 20;
+            const totalWidth = (cardW * numSteps) + (gap * (numSteps - 1));
+            const startX = (width - totalWidth) / 2;
+            
+            // Create Slots (Bottom row)
+            const slotY = height - cardH - 50;
+            levelData.steps.forEach((step, i) => {
+                slots.push({
+                    x: startX + i * (cardW + gap),
+                    y: slotY,
+                    w: cardW,
+                    h: cardH,
+                    expectedId: step.id,
+                    filledCard: null
+                });
+            });
+
+            // Create Cards (Top row, shuffled)
+            const cardStartY = height * 0.15;
+            let shuffledSteps = shuffle([...levelData.steps]);
+            
+            shuffledSteps.forEach((step, i) => {
+                cards.push({
+                    id: step.id,
+                    text: step.text,
+                    en: step.en,
+                    emoji: step.emoji,
+                    w: cardW,
+                    h: cardH,
+                    x: startX + i * (cardW + gap),
+                    y: cardStartY,
+                    originX: startX + i * (cardW + gap), // To snap back if dropped wrongly
+                    originY: cardStartY,
+                    isDragging: false,
+                    dragOffsetX: 0,
+                    dragOffsetY: 0,
+                    locked: false
+                });
+            });
+
+            currentState = GameState.PLAYING;
+        }
+
+        function getObjectUnderCursor(cx, cy) {
+            if (currentState === GameState.INSTRUCTIONS) {
+                if (cx >= startARButton.x && cx <= startARButton.x + startARButton.w &&
+                    cy >= startARButton.y && cy <= startARButton.y + startARButton.h) {
+                    return 'button';
+                }
+            } else if (currentState === GameState.PLAYING) {
+                // Check cards (reverse order to pick top-most)
+                for (let i = cards.length - 1; i >= 0; i--) {
+                    let c = cards[i];
+                    if (!c.locked && cx >= c.x && cx <= c.x + c.w && cy >= c.y && cy <= c.y + c.h) {
+                        return c;
+                    }
+                }
+            }
+            return null;
+        }
+
+        function handleActionStart(cx, cy) {
+            if (currentState === GameState.INSTRUCTIONS) {
+                let obj = getObjectUnderCursor(cx, cy);
+                if (obj === 'button') {
+                    initLevel(currentLevelIndex);
+                }
+            } else if (currentState === GameState.PLAYING) {
+                let obj = getObjectUnderCursor(cx, cy);
+                if (obj && typeof obj === 'object') {
+                    draggedCard = obj;
+                    draggedCard.isDragging = true;
+                    draggedCard.dragOffsetX = cx - draggedCard.x;
+                    draggedCard.dragOffsetY = cy - draggedCard.y;
+                    
+                    // Move to top of render list
+                    cards = cards.filter(c => c !== draggedCard);
+                    cards.push(draggedCard);
+
+                    // If it was in a slot, remove it from slot
+                    slots.forEach(s => {
+                        if(s.filledCard === draggedCard) s.filledCard = null;
+                    });
+                }
+            } else if (currentState === GameState.LEVEL_COMPLETE) {
+                // Click anywhere to next level
+                currentLevelIndex++;
+                if (currentLevelIndex < LEVELS.length) {
+                    initLevel(currentLevelIndex);
+                } else {
+                    currentState = GameState.GAME_OVER;
+                }
+            }
+        }
+
+        function handleActionEnd() {
+            if (currentState === GameState.PLAYING && draggedCard) {
+                draggedCard.isDragging = false;
+                
+                // Check collision with slots
+                let droppedInSlot = null;
+                const cx = draggedCard.x + draggedCard.w/2;
+                const cy = draggedCard.y + draggedCard.h/2;
+
+                for (let i = 0; i < slots.length; i++) {
+                    let s = slots[i];
+                    if (!s.filledCard && 
+                        cx >= s.x && cx <= s.x + s.w && 
+                        cy >= s.y && cy <= s.y + s.h) {
+                        droppedInSlot = s;
+                        break;
+                    }
+                }
+
+                if (droppedInSlot) {
+                    // Snap to slot
+                    draggedCard.x = droppedInSlot.x;
+                    draggedCard.y = droppedInSlot.y;
+                    droppedInSlot.filledCard = draggedCard;
+                    checkWinCondition();
+                } else {
+                    // Snap back to origin
+                    draggedCard.x = draggedCard.originX;
+                    draggedCard.y = draggedCard.originY;
+                }
+                draggedCard = null;
+            }
+        }
+
+        function checkWinCondition() {
+            let allCorrect = true;
+            let filledCount = 0;
+            
+            slots.forEach(s => {
+                if (s.filledCard) {
+                    filledCount++;
+                    if (s.filledCard.id !== s.expectedId) {
+                        allCorrect = false;
+                    }
+                }
+            });
+
+            if (filledCount === slots.length && allCorrect) {
+                // Lock cards
+                cards.forEach(c => c.locked = true);
+                score += 100;
+                setTimeout(() => {
+                    currentState = GameState.LEVEL_COMPLETE;
+                }, 500);
+            } else if (filledCount === slots.length && !allCorrect) {
+                 // Option: Provide feedback if full but wrong.
+                 // For now, let them figure it out and rearrange.
+            }
+        }
+
+        // --- 6. Render Loop ---
+        
+        // Helper: Draw Rounded Rect
+        function roundRect(ctx, x, y, width, height, radius, fill, stroke) {
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(x + width - radius, y);
+            ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+            ctx.lineTo(x + width, y + height - radius);
+            ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+            ctx.lineTo(x + radius, y + height);
+            ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+            ctx.lineTo(x, y + radius);
+            ctx.quadraticCurveTo(x, y, x + radius, y);
+            ctx.closePath();
+            if (fill) ctx.fill();
+            if (stroke) ctx.stroke();
+        }
+
+        function drawGlassPanel(x, y, w, h, radius) {
+            ctx.save();
+            // Simulated Glassmorphism on canvas
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.lineWidth = 1;
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.2)';
+            ctx.shadowBlur = 10;
+            ctx.shadowOffsetY = 4;
+            roundRect(ctx, x, y, w, h, radius, true, true);
+            ctx.restore();
+        }
+
+        function drawCard(c) {
+            ctx.save();
+            
+            // Base shadow & background (2.5D feel)
+            ctx.fillStyle = c.locked ? 'rgba(200, 255, 200, 0.9)' : 'rgba(255, 255, 255, 0.9)';
+            if (c.isDragging) {
+                ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+                ctx.shadowBlur = 20;
+                ctx.shadowOffsetY = 10;
+                ctx.transform(1.05, 0, 0, 1.05, -c.w*0.025, -c.h*0.025); // slight scale up
+            } else {
+                ctx.shadowColor = 'rgba(0, 0, 0, 0.2)';
+                ctx.shadowBlur = 5;
+                ctx.shadowOffsetY = 2;
+            }
+            
+            ctx.strokeStyle = c.locked ? '#4ade80' : '#e2e8f0';
+            ctx.lineWidth = 2;
+            roundRect(ctx, c.x, c.y, c.w, c.h, 16, true, true);
+            ctx.shadowColor = 'transparent'; // Reset shadow for inner elements
+
+            // Emoji
+            ctx.font = `${c.h * 0.4}px Arial`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(c.emoji, c.x + c.w/2, c.y + c.h * 0.35);
+
+            // Thai Text
+            ctx.fillStyle = '#1e293b';
+            ctx.font = `bold ${c.h * 0.12}px Kanit`;
+            ctx.fillText(c.text, c.x + c.w/2, c.y + c.h * 0.7);
+            
+            // English Text
+            ctx.fillStyle = '#64748b';
+            ctx.font = `normal ${c.h * 0.08}px Kanit`;
+            ctx.fillText(c.en, c.x + c.w/2, c.y + c.h * 0.85);
+
+            ctx.restore();
+        }
+
+        function drawHandAndCursor() {
+            // Draw Hand Skeleton if using Hand
+            if (handLandmarks && cursor.source === 'hand') {
+                ctx.save();
+                
+                // Draw connections (skeleton)
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                ctx.lineWidth = 2;
+                
+                // Need to manually draw connections handling the mirrored X
+                const drawLine = (p1, p2) => {
+                    ctx.beginPath();
+                    ctx.moveTo((1 - handLandmarks[p1].x) * width, handLandmarks[p1].y * height);
+                    ctx.lineTo((1 - handLandmarks[p2].x) * width, handLandmarks[p2].y * height);
+                    ctx.stroke();
+                };
+                
+                // Simple skeleton mapping
+                const connections = [
+                    [0,1],[1,2],[2,3],[3,4], // Thumb
+                    [0,5],[5,6],[6,7],[7,8], // Index
+                    [5,9],[9,10],[10,11],[11,12], // Middle
+                    [9,13],[13,14],[14,15],[15,16], // Ring
+                    [13,17],[0,17],[17,18],[18,19],[19,20] // Pinky
+                ];
+                connections.forEach(conn => drawLine(conn[0], conn[1]));
+
+                // Draw joints
+                ctx.fillStyle = 'rgba(0, 255, 255, 0.5)';
+                for (let i = 0; i < handLandmarks.length; i++) {
+                    let lx = (1 - handLandmarks[i].x) * width;
+                    let ly = handLandmarks[i].y * height;
+                    ctx.beginPath();
+                    ctx.arc(lx, ly, 3, 0, 2 * Math.PI);
+                    ctx.fill();
+                }
+                ctx.restore();
+            }
+
+            // Draw Dynamic Cursor
+            ctx.save();
+            ctx.beginPath();
+            let r = cursor.radius;
+            
+            switch (cursor.state) {
+                case 'normal':
+                    ctx.strokeStyle = '#3b82f6'; // Blue
+                    ctx.fillStyle = 'rgba(59, 130, 246, 0.3)';
+                    ctx.lineWidth = 3;
+                    break;
+                case 'hover':
+                    ctx.strokeStyle = '#eab308'; // Yellow
+                    ctx.fillStyle = 'rgba(234, 179, 8, 0.2)';
+                    ctx.lineWidth = 3;
+                    ctx.setLineDash([5, 5]);
+                    r = r * 1.2;
+                    break;
+                case 'miss':
+                    ctx.strokeStyle = '#ef4444'; // Red
+                    ctx.fillStyle = 'rgba(239, 68, 68, 0.4)';
+                    ctx.lineWidth = 4;
+                    r = r * 0.8;
+                    break;
+                case 'grab':
+                    ctx.strokeStyle = '#22c55e'; // Green
+                    ctx.fillStyle = 'rgba(34, 197, 94, 0.5)';
+                    ctx.lineWidth = 4;
+                    r = r * 0.9;
+                    break;
+            }
+
+            ctx.arc(cursor.x, cursor.y, r, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.stroke();
+            
+            // Grab icon inside cursor if grabbed
+            if (cursor.state === 'grab') {
+                ctx.setLineDash([]);
+                ctx.fillStyle = 'white';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('✊', cursor.x, cursor.y);
+            }
+
+            ctx.restore();
+
+            // Warning if Hand source is expected but missing
+            if (cursor.source === 'mouse' && currentState !== GameState.MENU) {
+                ctx.save();
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.fillRect(10, height - 40, 200, 30);
+                ctx.fillStyle = '#facc15';
+                ctx.font = '14px Kanit';
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'middle';
+                ctx.fillText("⚠️ AI: ไม่พบมือ (ใช้เมาส์แทนได้)", 20, height - 25);
+                ctx.restore();
+            }
+        }
+
+        function drawLoop() {
+            // Clear canvas (transparent to show video behind)
+            ctx.clearRect(0, 0, width, height);
+
+            updateCursor();
+
+            if (currentState === GameState.INSTRUCTIONS) {
+                // UI Overlay for instruction
+                drawGlassPanel(width/2 - 250, height/2 - 150, 500, 300, 20);
+                ctx.fillStyle = 'white';
+                ctx.textAlign = 'center';
+                ctx.font = 'bold 30px Kanit';
+                ctx.fillText("วิธีเล่น (AR Control)", width/2, height/2 - 100);
+                
+                ctx.font = '18px Kanit';
+                ctx.fillText("1. หันฝ่ามือเข้าหากล้องให้เห็นจุดบนมือ", width/2, height/2 - 60);
+                ctx.fillText("2. เลื่อนจุดบังคับไปที่เป้าหมาย (Hover = วงเหลือง)", width/2, height/2 - 30);
+                ctx.fillText("3. 'จีบนิ้ว' (นิ้วโป้งแตะนิ้วชี้) เพื่อ หยิบ/กด (Grab = วงเขียว)", width/2, height/2);
+                
+                // Start Button AR
+                const isHoverBtn = (cursor.x >= startARButton.x && cursor.x <= startARButton.x + startARButton.w &&
+                                   cursor.y >= startARButton.y && cursor.y <= startARButton.y + startARButton.h);
+                
+                ctx.fillStyle = isHoverBtn ? '#22c55e' : 'rgba(34, 197, 94, 0.8)';
+                roundRect(ctx, startARButton.x, startARButton.y, startARButton.w, startARButton.h, 30, true, false);
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 24px Kanit';
+                ctx.fillText(startARButton.text, startARButton.x + startARButton.w/2, startARButton.y + startARButton.h/2 + 8);
+                
+            } else if (currentState === GameState.PLAYING) {
+                // Drag Logic Update
+                if (draggedCard) {
+                    draggedCard.x = cursor.x - draggedCard.dragOffsetX;
+                    draggedCard.y = cursor.y - draggedCard.dragOffsetY;
+                }
+
+                // Top Bar (Score & Title)
+                drawGlassPanel(20, 20, width - 40, 70, 20);
+                
+                ctx.fillStyle = 'white';
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'middle';
+                ctx.font = 'bold 24px Kanit';
+                ctx.fillText(`ด่านที่ ${currentLevelIndex + 1}/5: ${LEVELS[currentLevelIndex].title}`, 40, 55);
+                
+                ctx.textAlign = 'right';
+                ctx.fillStyle = '#fbbf24';
+                ctx.font = 'bold 28px Kanit';
+                ctx.fillText(`คะแนน: ${score}`, width - 40, 55);
+
+                // Draw Slots
+                slots.forEach((s, idx) => {
+                    ctx.save();
+                    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+                    ctx.setLineDash([10, 10]);
+                    ctx.lineWidth = 2;
+                    roundRect(ctx, s.x, s.y, s.w, s.h, 16, true, true);
+                    
+                    // Slot Number
+                    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+                    ctx.font = `bold ${s.h * 0.4}px Arial`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(idx + 1, s.x + s.w/2, s.y + s.h/2);
+                    ctx.restore();
+                });
+
+                // Draw Cards
+                cards.forEach(c => drawCard(c));
+
+            } else if (currentState === GameState.LEVEL_COMPLETE) {
+                drawGlassPanel(width/2 - 200, height/2 - 100, 400, 200, 20);
+                ctx.fillStyle = '#4ade80';
+                ctx.textAlign = 'center';
+                ctx.font = 'bold 40px Kanit';
+                ctx.fillText("ถูกต้อง!", width/2, height/2 - 20);
+                
+                ctx.fillStyle = 'white';
+                ctx.font = '20px Kanit';
+                ctx.fillText("แตะเพื่อไปด่านถัดไป", width/2, height/2 + 30);
+            
+            } else if (currentState === GameState.GAME_OVER) {
+                drawGlassPanel(width/2 - 250, height/2 - 150, 500, 300, 20);
+                ctx.fillStyle = '#fbbf24';
+                ctx.textAlign = 'center';
+                ctx.font = 'bold 50px Kanit';
+                ctx.fillText("All Clear!", width/2, height/2 - 30);
+                
+                ctx.fillStyle = 'white';
+                ctx.font = '30px Kanit';
+                ctx.fillText(`คะแนนรวม: ${score}`, width/2, height/2 + 30);
+            }
+
+            drawHandAndCursor();
+
+            // Loop
+            requestAnimationFrame(drawLoop);
+        }
+
+    </script>
+</body>
+</html>
